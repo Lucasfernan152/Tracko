@@ -5,9 +5,9 @@ import "time"
 type TripStatus string
 
 const (
-	TripStatusPending    TripStatus = "pending"     // creado por el negocio, sin chofer
-	TripStatusAssigned   TripStatus = "assigned"    // chofer asignado, aún no arrancó
-	TripStatusInProgress TripStatus = "in_progress" // en camino, acepta telemetría
+	TripStatusPending    TripStatus = "pending"     // created by the business, no driver yet
+	TripStatusAssigned   TripStatus = "assigned"    // driver assigned, not started
+	TripStatusInProgress TripStatus = "in_progress" // en route, accepts telemetry
 	TripStatusCompleted  TripStatus = "completed"
 	TripStatusCancelled  TripStatus = "cancelled"
 )
@@ -21,8 +21,8 @@ type Trip struct {
 	EndedAt   *time.Time     `json:"ended_at,omitempty"`
 }
 
-// CreateTripRequest lo crea la app del negocio (ej. traslado entre sucursales).
-// El chofer se asigna después con UpdateTripRequest.
+// CreateTripRequest is created by the business app (e.g. a transfer between branches).
+// The driver is assigned later with UpdateTripRequest.
 type CreateTripRequest struct {
 	Metadata map[string]any `json:"metadata"`
 }

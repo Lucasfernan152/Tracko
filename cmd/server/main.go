@@ -3,11 +3,14 @@ package main
 import (
 	"context"
 	"log"
+	"net/http"
 	"os"
 	"os/signal"
 	"syscall"
-	"net/http"
+	"time"
 
+	"tracko/config"
+	"tracko/docs"
 	"tracko/internal/application"
 	httpapi "tracko/internal/infrastructure/http"
 	"tracko/internal/infrastructure/messaging"
@@ -19,14 +22,11 @@ func main() {
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 
-	postgresDSN := getEnv("POSTGRES_DSN", "postgres://postgres:admin@localhost:5432/tracko?sslmode=disable")
-	rabbitURL := getEnv("RABBITMQ_URL", "amqp://guest:guest@localhost:5672/")
-	mqttURL := getEnv("MQTT_URL", "tcp://localhost:1883")
-	httpAddr := getEnv("HTTP_ADDR", ":8080")
+	cfg := config.Load()
 
 	log.Println("[Main] Initializing tracking microservice...")
 
-	dbPool, err := persistence.NewPostgresPool(ctx, postgresDSN)
+	dbPool, err := persistence.NewPostgresPool(ctx, cfg.PostgresDSN)
 	if err != nil {
 		log.Fatalf("[Main] Error connecting to PostgreSQL: %v", err)
 	}
@@ -41,26 +41,55 @@ func main() {
 	wsHandler := websocket.NewWSHandler(wsHub)
 	apiHandler := httpapi.NewHandler(trackingService)
 
-	http.HandleFunc("/", func(w http.ResponseWriter, r *http.Request) {
-		if r.URL.Path != "/" {
-			http.NotFound(w, r)
-			return
-		}
-		http.ServeFile(w, r, "front.html")
-	})
-	http.Handle("/api/drivers/", apiHandler)
-	http.Handle("/api/trips", apiHandler)
-	http.Handle("/api/trips/", apiHandler)
-	http.HandleFunc("/ws/tracking", wsHandler.ServeWS)
+	apiMux := http.NewServeMux()
+	apiMux.HandleFunc("/health", httpapi.HealthHandler(dbPool.Ping))
+	apiMux.HandleFunc("/openapi.yaml", httpapi.OpenAPIHandler(docs.OpenAPI))
+	apiMux.Handle("/swagger/", httpapi.SwaggerUIHandler())
+	apiMux.Handle("/api/drivers/", apiHandler)
+	apiMux.Handle("/api/trips", apiHandler)
+	apiMux.Handle("/api/trips/", apiHandler)
+
+	if cfg.WSAddr == "" {
+		apiMux.HandleFunc(cfg.WSPath, wsHandler.ServeWS)
+	}
+
+	httpServer := &http.Server{
+		Addr:    cfg.HTTPAddr,
+		Handler: apiMux,
+	}
 
 	go func() {
-		log.Printf("[Main] HTTP/WebSocket server listening on %s", httpAddr)
-		if err := http.ListenAndServe(httpAddr, nil); err != nil {
+		log.Printf("[Main] HTTP server listening on %s", cfg.HTTPAddr)
+		if err := httpServer.ListenAndServe(); err != nil && err != http.ErrServerClosed {
 			log.Fatalf("[Main] HTTP server error: %v", err)
 		}
 	}()
 
-	subscriber, err := messaging.NewRabbitSubscriber(rabbitURL, trackingService)
+	var wsServer *http.Server
+	if cfg.WSAddr != "" {
+		wsMux := http.NewServeMux()
+		wsMux.HandleFunc(cfg.WSPath, wsHandler.ServeWS)
+		wsServer = &http.Server{
+			Addr:    cfg.WSAddr,
+			Handler: wsMux,
+		}
+		go func() {
+			log.Printf("[Main] WebSocket server listening on %s%s", cfg.WSAddr, cfg.WSPath)
+			if err := wsServer.ListenAndServe(); err != nil && err != http.ErrServerClosed {
+				log.Fatalf("[Main] WebSocket server error: %v", err)
+			}
+		}()
+	} else {
+		log.Printf("[Main] WebSocket available on %s%s", cfg.HTTPAddr, cfg.WSPath)
+	}
+
+	subscriber, err := messaging.NewRabbitSubscriber(
+		cfg.RabbitURL,
+		cfg.RabbitQueue,
+		cfg.RabbitExchange,
+		cfg.RabbitRoutingKey,
+		trackingService,
+	)
 	if err != nil {
 		log.Fatalf("[Main] Error connecting to RabbitMQ: %v", err)
 	}
@@ -70,28 +99,34 @@ func main() {
 		log.Fatalf("[Main] Error starting consumer: %v", err)
 	}
 
-	mqttSubscriber, err := messaging.NewMQTTSubscriber(mqttURL, trackingService)
+	mqttSubscriber, err := messaging.NewMQTTSubscriber(cfg.MQTTURL, cfg.MQTTTopic, trackingService)
 	if err != nil {
-		log.Printf("[Main] MQTT broker not available (%v). mosquitto_pub to localhost:1883 will not reach this service.", err)
-	} else {
-		defer mqttSubscriber.Close()
-		if err := mqttSubscriber.StartConsuming(ctx); err != nil {
-			log.Printf("[Main] Error starting MQTT subscriber: %v", err)
-		}
+		log.Fatalf("[Main] Error connecting to MQTT: %v", err)
+	}
+	defer mqttSubscriber.Close()
+
+	if err := mqttSubscriber.StartConsuming(ctx); err != nil {
+		log.Fatalf("[Main] Error starting MQTT subscriber: %v", err)
 	}
 
-	log.Println("[Main] Service running. Open http://localhost:8080 — Press CTRL+C to exit.")
+	log.Printf("[Main] Service running on %s — Press CTRL+C to exit.", cfg.HTTPAddr)
 
 	stop := make(chan os.Signal, 1)
 	signal.Notify(stop, os.Interrupt, syscall.SIGTERM)
 	<-stop
 
 	log.Println("[Main] Shutting down the service gracefully...")
-}
+	cancel()
 
-func getEnv(key, fallback string) string {
-	if value, exists := os.LookupEnv(key); exists {
-		return value
+	shutdownCtx, shutdownCancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer shutdownCancel()
+
+	if err := httpServer.Shutdown(shutdownCtx); err != nil {
+		log.Printf("[Main] HTTP shutdown error: %v", err)
 	}
-	return fallback
+	if wsServer != nil {
+		if err := wsServer.Shutdown(shutdownCtx); err != nil {
+			log.Printf("[Main] WebSocket shutdown error: %v", err)
+		}
+	}
 }

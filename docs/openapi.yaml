@@ -1,0 +1,374 @@
+openapi: 3.0.3
+info:
+  title: Tracko API
+  version: 1.0.0
+  description: |
+    Self-hosted live tracking HTTP API.
+
+    Create trips, assign drivers, and read stored locations.
+    GPS points are ingested over MQTT (`trips/{trip_id}/location`) or
+    RabbitMQ (`vehicles.*.location` on `amq.topic`), not through this HTTP API.
+
+    Live updates are available on the WebSocket path configured by `WS_PATH`
+    (default `ws://{host}/ws/tracking`). Each message is a Location object.
+  license:
+    name: MIT
+    url: https://opensource.org/licenses/MIT
+
+servers:
+  - url: /
+    description: This Tracko instance
+
+tags:
+  - name: Health
+  - name: Trips
+  - name: Drivers
+
+paths:
+  /health:
+    get:
+      tags: [Health]
+      summary: Service health
+      description: Pings PostgreSQL. Used by Docker healthchecks.
+      operationId: getHealth
+      responses:
+        "200":
+          description: Database is reachable
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Health"
+              example:
+                status: ok
+        "405":
+          $ref: "#/components/responses/Error"
+        "503":
+          description: Database is unreachable
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Health"
+              example:
+                status: unavailable
+                error: connection refused
+
+  /api/trips:
+    post:
+      tags: [Trips]
+      summary: Create a trip
+      description: Creates a trip in `pending` with no driver. Status and driver are set later with PATCH.
+      operationId: createTrip
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/CreateTripRequest"
+            example:
+              metadata:
+                origin_branch: Downtown Branch
+                destination_branch: North Branch
+                cargo: General cargo
+      responses:
+        "201":
+          description: Trip created
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Trip"
+        "400":
+          $ref: "#/components/responses/Error"
+
+  /api/trips/{tripId}:
+    get:
+      tags: [Trips]
+      summary: Get a trip
+      operationId: getTrip
+      parameters:
+        - $ref: "#/components/parameters/TripId"
+      responses:
+        "200":
+          description: Trip
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Trip"
+        "404":
+          $ref: "#/components/responses/Error"
+    patch:
+      tags: [Trips]
+      summary: Update a trip
+      description: |
+        Assign a driver, change status, and/or merge metadata.
+
+        Typical flow: assign `driver_id` (moves `pending` → `assigned`),
+        then set `status` to `in_progress` so telemetry is accepted.
+        Finish with `completed` or `cancelled`.
+      operationId: updateTrip
+      parameters:
+        - $ref: "#/components/parameters/TripId"
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/UpdateTripRequest"
+            examples:
+              assignDriver:
+                summary: Assign driver
+                value:
+                  driver_id: driver-123
+              start:
+                summary: Start trip
+                value:
+                  status: in_progress
+              complete:
+                summary: Complete trip
+                value:
+                  status: completed
+                  metadata:
+                    result: delivered
+      responses:
+        "200":
+          description: Updated trip
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Trip"
+        "400":
+          $ref: "#/components/responses/Error"
+
+  /api/trips/{tripId}/route:
+    get:
+      tags: [Trips]
+      summary: Get points for a trip
+      operationId: getTripRoute
+      parameters:
+        - $ref: "#/components/parameters/TripId"
+      responses:
+        "200":
+          description: Route
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Route"
+        "400":
+          $ref: "#/components/responses/Error"
+
+  /api/drivers/{driverId}/trips:
+    get:
+      tags: [Drivers]
+      summary: List trips for a driver
+      operationId: listDriverTrips
+      parameters:
+        - $ref: "#/components/parameters/DriverId"
+      responses:
+        "200":
+          description: Trips, newest first
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  $ref: "#/components/schemas/Trip"
+        "400":
+          $ref: "#/components/responses/Error"
+
+  /api/drivers/{driverId}/route:
+    get:
+      tags: [Drivers]
+      summary: Get points for a driver
+      description: Optional `from` / `to` filter stored points by `created_at` (RFC3339).
+      operationId: getDriverRoute
+      parameters:
+        - $ref: "#/components/parameters/DriverId"
+        - name: from
+          in: query
+          schema:
+            type: string
+            format: date-time
+          example: "2026-08-14T00:00:00Z"
+        - name: to
+          in: query
+          schema:
+            type: string
+            format: date-time
+          example: "2026-08-14T23:59:59Z"
+      responses:
+        "200":
+          description: Route
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Route"
+        "400":
+          $ref: "#/components/responses/Error"
+
+  /api/drivers/{driverId}/location:
+    get:
+      tags: [Drivers]
+      summary: Last known location
+      operationId: getDriverLocation
+      parameters:
+        - $ref: "#/components/parameters/DriverId"
+      responses:
+        "200":
+          description: Latest stored point
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Location"
+        "404":
+          $ref: "#/components/responses/Error"
+        "500":
+          $ref: "#/components/responses/Error"
+
+components:
+  parameters:
+    TripId:
+      name: tripId
+      in: path
+      required: true
+      schema:
+        type: string
+        example: trip-a1b2c3d4e5f6g7h8
+    DriverId:
+      name: driverId
+      in: path
+      required: true
+      schema:
+        type: string
+        example: driver-123
+
+  responses:
+    Error:
+      description: Error
+      content:
+        application/json:
+          schema:
+            $ref: "#/components/schemas/Error"
+
+  schemas:
+    Error:
+      type: object
+      required: [error]
+      properties:
+        error:
+          type: string
+          example: not found
+
+    Health:
+      type: object
+      required: [status]
+      properties:
+        status:
+          type: string
+          enum: [ok, unavailable]
+        error:
+          type: string
+
+    TripStatus:
+      type: string
+      enum: [pending, assigned, in_progress, completed, cancelled]
+      description: |
+        `pending` — created, no driver.
+        `assigned` — driver set, not started.
+        `in_progress` — accepts telemetry.
+        `completed` / `cancelled` — terminal.
+
+    Trip:
+      type: object
+      required: [id, metadata, status, started_at]
+      properties:
+        id:
+          type: string
+          example: trip-a1b2c3d4e5f6g7h8
+        driver_id:
+          type: string
+          example: driver-123
+        metadata:
+          type: object
+          additionalProperties: true
+        status:
+          $ref: "#/components/schemas/TripStatus"
+        started_at:
+          type: string
+          format: date-time
+        ended_at:
+          type: string
+          format: date-time
+
+    CreateTripRequest:
+      type: object
+      properties:
+        metadata:
+          type: object
+          additionalProperties: true
+
+    UpdateTripRequest:
+      type: object
+      properties:
+        driver_id:
+          type: string
+        metadata:
+          type: object
+          additionalProperties: true
+          description: Merged into existing metadata
+        status:
+          $ref: "#/components/schemas/TripStatus"
+
+    Location:
+      type: object
+      properties:
+        id:
+          type: integer
+          format: int64
+        driver_id:
+          type: string
+        trip_id:
+          type: string
+        latitude:
+          type: number
+          format: double
+          minimum: -90
+          maximum: 90
+        longitude:
+          type: number
+          format: double
+          minimum: -180
+          maximum: 180
+        speed:
+          type: number
+          format: double
+          description: Speed in km/h
+        heading:
+          type: number
+          format: double
+          description: Heading in degrees, 0–360
+        timestamp:
+          type: string
+          format: date-time
+
+    Route:
+      type: object
+      required: [point_count, points]
+      properties:
+        driver_id:
+          type: string
+        trip_id:
+          type: string
+        metadata:
+          type: object
+          additionalProperties: true
+        point_count:
+          type: integer
+        started_at:
+          type: string
+          format: date-time
+        ended_at:
+          type: string
+          format: date-time
+        points:
+          type: array
+          items:
+            $ref: "#/components/schemas/Location"

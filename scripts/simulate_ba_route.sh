@@ -6,8 +6,8 @@ PORT="${PORT:-1883}"
 DRIVER_ID="${DRIVER_ID:-driver-123}"
 TRIP_ID="${TRIP_ID:-}"
 API_BASE="${API_BASE:-http://localhost:8080}"
-ORIGIN_BRANCH="${ORIGIN_BRANCH:-Sucursal Centro}"
-DEST_BRANCH="${DEST_BRANCH:-Sucursal Norte}"
+ORIGIN_BRANCH="${ORIGIN_BRANCH:-Downtown Branch}"
+DEST_BRANCH="${DEST_BRANCH:-North Branch}"
 INTERVAL_MS="${INTERVAL_MS:-800}"
 STEPS_PER_SEGMENT="${STEPS_PER_SEGMENT:-8}"
 LOOPS="${LOOPS:-1}"
@@ -24,37 +24,37 @@ while [[ $# -gt 0 ]]; do
     --interval-ms) INTERVAL_MS="$2"; shift 2 ;;
     --steps) STEPS_PER_SEGMENT="$2"; shift 2 ;;
     --loops) LOOPS="$2"; shift 2 ;;
-    *) echo "Opcion desconocida: $1" >&2; exit 1 ;;
+    *) echo "Unknown option: $1" >&2; exit 1 ;;
   esac
 done
 
 if ! command -v mosquitto_pub >/dev/null 2>&1; then
-  echo "No se encontro mosquitto_pub en el PATH. Instala Mosquitto y volve a intentar." >&2
+  echo "mosquitto_pub was not found in PATH. Install Mosquitto and try again." >&2
   exit 1
 fi
 
 if [[ -z "$TRIP_ID" ]]; then
   TRIP_ID="$(curl -sS -X POST "${API_BASE}/api/trips" \
     -H "Content-Type: application/json" \
-    -d "{\"metadata\":{\"origin_branch\":\"${ORIGIN_BRANCH}\",\"destination_branch\":\"${DEST_BRANCH}\",\"cargo\":\"Mercaderia general\"}}" \
+    -d "{\"metadata\":{\"origin_branch\":\"${ORIGIN_BRANCH}\",\"destination_branch\":\"${DEST_BRANCH}\",\"cargo\":\"General cargo\"}}" \
     | sed -n 's/.*"id":"\([^"]*\)".*/\1/p')"
-  echo "1) Negocio creo el viaje: ${TRIP_ID}"
+  echo "1) Business created the trip: ${TRIP_ID}"
 
   curl -sS -X PATCH "${API_BASE}/api/trips/${TRIP_ID}" \
     -H "Content-Type: application/json" \
     -d "{\"driver_id\":\"${DRIVER_ID}\"}" >/dev/null
-  echo "2) Negocio asigno chofer: ${DRIVER_ID}"
+  echo "2) Business assigned driver: ${DRIVER_ID}"
 
   curl -sS -X PATCH "${API_BASE}/api/trips/${TRIP_ID}" \
     -H "Content-Type: application/json" \
     -d '{"status":"in_progress"}' >/dev/null
-  echo "3) Chofer arranco el viaje"
+  echo "3) Driver started the trip"
 fi
 
 TOPIC="trips/${TRIP_ID}/location"
 SLEEP_SECS="$(awk -v ms="$INTERVAL_MS" 'BEGIN { printf "%.3f", ms / 1000 }')"
 
-echo "Publicando recorrido por Buenos Aires"
+echo "Publishing Buenos Aires route"
 echo "Broker: ${BROKER}:${PORT}  Topic: ${TOPIC}  Loops: ${LOOPS}"
 echo
 
@@ -96,7 +96,7 @@ ROUTE=(
 )
 
 for ((loop=1; loop<=LOOPS; loop++)); do
-  echo "=== Vuelta ${loop}/${LOOPS} ==="
+  echo "=== Lap ${loop}/${LOOPS} ==="
 
   for ((i=0; i<${#ROUTE[@]}-1; i++)); do
     IFS='|' read -r from_name from_lat from_lng from_speed <<< "${ROUTE[$i]}"
@@ -123,7 +123,7 @@ done
 
 curl -sS -X PATCH "${API_BASE}/api/trips/${TRIP_ID}" \
   -H "Content-Type: application/json" \
-  -d '{"status":"completed","metadata":{"resultado":"entregado"}}' >/dev/null
+  -d '{"status":"completed","metadata":{"result":"delivered"}}' >/dev/null
 
 echo
-echo "Recorrido terminado. Trip ID: ${TRIP_ID}"
+echo "Route finished. Trip ID: ${TRIP_ID}"

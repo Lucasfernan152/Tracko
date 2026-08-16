@@ -13,12 +13,15 @@ import (
 )
 
 type RabbitSubscriber struct {
-	conn    *amqp.Connection
-	channel *amqp.Channel
-	service application.TrackingService
+	conn       *amqp.Connection
+	channel    *amqp.Channel
+	service    application.TrackingService
+	queue      string
+	exchange   string
+	routingKey string
 }
 
-func NewRabbitSubscriber(amqpURL string, service application.TrackingService) (*RabbitSubscriber, error) {
+func NewRabbitSubscriber(amqpURL, queue, exchange, routingKey string, service application.TrackingService) (*RabbitSubscriber, error) {
 	conn, err := amqp.Dial(amqpURL)
 	if err != nil {
 		return nil, fmt.Errorf("error connecting to rabbitmq: %w", err)
@@ -30,8 +33,18 @@ func NewRabbitSubscriber(amqpURL string, service application.TrackingService) (*
 		return nil, fmt.Errorf("error opening channel in rabbitmq: %w", err)
 	}
 
+	if queue == "" {
+		queue = "vehicle_telemetry_queue"
+	}
+	if exchange == "" {
+		exchange = "amq.topic"
+	}
+	if routingKey == "" {
+		routingKey = "vehicles.*.location"
+	}
+
 	_, err = ch.QueueDeclare(
-		"vehicle_telemetry_queue",
+		queue,
 		true,
 		false,
 		false,
@@ -45,9 +58,9 @@ func NewRabbitSubscriber(amqpURL string, service application.TrackingService) (*
 	}
 
 	err = ch.QueueBind(
-		"vehicle_telemetry_queue",
-		"vehicles.*.location",
-		"amq.topic",
+		queue,
+		routingKey,
+		exchange,
 		false,
 		nil,
 	)
@@ -58,15 +71,18 @@ func NewRabbitSubscriber(amqpURL string, service application.TrackingService) (*
 	}
 
 	return &RabbitSubscriber{
-		conn:    conn,
-		channel: ch,
-		service: service,
+		conn:       conn,
+		channel:    ch,
+		service:    service,
+		queue:      queue,
+		exchange:   exchange,
+		routingKey: routingKey,
 	}, nil
 }
 
 func (s *RabbitSubscriber) StartConsuming(ctx context.Context) error {
 	msgs, err := s.channel.Consume(
-		"vehicle_telemetry_queue",
+		s.queue,
 		"",
 		false,
 		false,

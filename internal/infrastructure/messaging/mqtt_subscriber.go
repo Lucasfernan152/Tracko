@@ -17,9 +17,10 @@ import (
 type MQTTSubscriber struct {
 	client  mqtt.Client
 	service application.TrackingService
+	topic   string
 }
 
-func NewMQTTSubscriber(brokerURL string, service application.TrackingService) (*MQTTSubscriber, error) {
+func NewMQTTSubscriber(brokerURL, topic string, service application.TrackingService) (*MQTTSubscriber, error) {
 	opts := mqtt.NewClientOptions().
 		AddBroker(brokerURL).
 		SetClientID(fmt.Sprintf("tracko-subscriber-%d", time.Now().UnixNano())).
@@ -42,9 +43,14 @@ func NewMQTTSubscriber(brokerURL string, service application.TrackingService) (*
 		return nil, fmt.Errorf("error connecting to mqtt broker: %w", err)
 	}
 
+	if topic == "" {
+		topic = "trips/+/location"
+	}
+
 	return &MQTTSubscriber{
 		client:  client,
 		service: service,
+		topic:   topic,
 	}, nil
 }
 
@@ -69,7 +75,7 @@ func (s *MQTTSubscriber) StartConsuming(ctx context.Context) error {
 		}
 	}
 
-	token := s.client.Subscribe("trips/+/location", 1, handler)
+	token := s.client.Subscribe(s.topic, 1, handler)
 	if !token.WaitTimeout(5 * time.Second) {
 		return fmt.Errorf("timeout subscribing to mqtt topic")
 	}
@@ -77,7 +83,7 @@ func (s *MQTTSubscriber) StartConsuming(ctx context.Context) error {
 		return fmt.Errorf("error subscribing to mqtt topic: %w", err)
 	}
 
-	log.Println("[MQTTSubscriber] Subscribed to trips/+/location")
+	log.Printf("[MQTTSubscriber] Subscribed to %s", s.topic)
 	return nil
 }
 

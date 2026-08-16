@@ -1,12 +1,15 @@
 package httpapi
 
 import (
+	"context"
 	"encoding/json"
 	"errors"
 	"io"
 	"net/http"
 	"strings"
 	"time"
+
+	"github.com/jackc/pgx/v5"
 
 	"tracko/internal/application"
 	"tracko/internal/domain"
@@ -51,6 +54,8 @@ func (h *Handler) handleDrivers(w http.ResponseWriter, r *http.Request, parts []
 		h.getDriverRoute(w, r, driverID)
 	case r.Method == http.MethodGet && parts[3] == "trips":
 		h.listDriverTrips(w, r, driverID)
+	case r.Method == http.MethodGet && parts[3] == "location":
+		h.getDriverLocation(w, r, driverID)
 	default:
 		writeError(w, http.StatusNotFound, "not found")
 	}
@@ -60,15 +65,15 @@ func (h *Handler) handleTrips(w http.ResponseWriter, r *http.Request, parts []st
 	switch {
 	case r.Method == http.MethodPost && len(parts) == 2:
 		h.createTrip(w, r)
+	case len(parts) == 4 && parts[2] != "" && r.Method == http.MethodGet && parts[3] == "route":
+		h.getTripRoute(w, r, parts[2])
 	case len(parts) == 3 && parts[2] != "":
 		tripID := parts[2]
 		switch {
-		case r.Method == http.MethodGet && len(parts) == 3:
+		case r.Method == http.MethodGet:
 			h.getTrip(w, r, tripID)
-		case r.Method == http.MethodPatch && len(parts) == 3:
+		case r.Method == http.MethodPatch:
 			h.updateTrip(w, r, tripID)
-		case r.Method == http.MethodGet && len(parts) == 4 && parts[3] == "route":
-			h.getTripRoute(w, r, tripID)
 		default:
 			writeError(w, http.StatusNotFound, "not found")
 		}
@@ -125,6 +130,36 @@ func (h *Handler) listDriverTrips(w http.ResponseWriter, r *http.Request, driver
 		return
 	}
 	writeJSON(w, http.StatusOK, trips)
+}
+
+func (h *Handler) getDriverLocation(w http.ResponseWriter, r *http.Request, driverID string) {
+	loc, err := h.service.GetLastKnownLocation(r.Context(), driverID)
+	if err != nil {
+		if errors.Is(err, pgx.ErrNoRows) {
+			writeError(w, http.StatusNotFound, "location not found")
+			return
+		}
+		writeError(w, http.StatusInternalServerError, err.Error())
+		return
+	}
+	writeJSON(w, http.StatusOK, loc)
+}
+
+func HealthHandler(ping func(context.Context) error) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != http.MethodGet {
+			writeError(w, http.StatusMethodNotAllowed, "method not allowed")
+			return
+		}
+		if err := ping(r.Context()); err != nil {
+			writeJSON(w, http.StatusServiceUnavailable, map[string]string{
+				"status": "unavailable",
+				"error":  err.Error(),
+			})
+			return
+		}
+		writeJSON(w, http.StatusOK, map[string]string{"status": "ok"})
+	}
 }
 
 func (h *Handler) getDriverRoute(w http.ResponseWriter, r *http.Request, driverID string) {

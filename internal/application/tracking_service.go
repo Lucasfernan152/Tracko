@@ -60,6 +60,9 @@ func (s *trackingService) ProcessTelemetry(ctx context.Context, loc *domain.Loca
 	}
 
 	loc.DriverID = trip.DriverID
+	if loc.Timestamp.IsZero() {
+		loc.Timestamp = time.Now().UTC()
+	}
 
 	if err := s.repo.Save(ctx, loc); err != nil {
 		return fmt.Errorf("error processing telemetry: %w", err)
